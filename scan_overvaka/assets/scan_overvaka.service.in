@@ -1,0 +1,12 @@
+[Unit]
+Description=Scan overvaka (compress + OCR)
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=@HOME@/.local/bin/scan_overvaka @WATCH_DIR@
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

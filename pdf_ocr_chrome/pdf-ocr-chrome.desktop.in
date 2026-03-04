@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=PDF (OCR -> Chrome)
+Exec=@HOME@/.local/bin/ocr_chrome %f
+MimeType=application/pdf;
+NoDisplay=false
+Terminal=false

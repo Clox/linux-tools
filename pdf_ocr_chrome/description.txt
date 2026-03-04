@@ -1,0 +1,11 @@
+PDF OCR -> Chrome
+
+Installs a PDF opener wrapper that runs:
+ocrmypdf -l swe+eng --skip-text
+and then opens the OCR:ed copy in Chrome/Chromium.
+
+Also installs a .desktop handler and sets it as the default app for application/pdf.
+
+Cache: ~/.cache/ocrpdf
+Binary: ~/.local/bin/ocr_chrome
+Desktop entry: ~/.local/share/applications/pdf-ocr-chrome.desktop

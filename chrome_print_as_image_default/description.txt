@@ -1,0 +1,10 @@
+Chrome: Print PDF as image by default
+
+Installs a Google Chrome enterprise policy on Linux that makes "Print as image"
+enabled by default when printing PDFs from Chrome.
+
+Writes policy JSON to:
+ /etc/opt/chrome/policies/managed/print_as_image.json
+
+Verify in Chrome:
+ chrome://policy

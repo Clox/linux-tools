@@ -1,0 +1,17 @@
+Scan övervaka: komprimera + OCR
+
+Övervakar en mapp (default: ~/scan) efter nya PDF:er/bilder från skanner.
+Sparar ut till undermapp "compressed/" där PDF:er:
+1) komprimeras med Ghostscript (ps2pdf)
+2) OCR-processas med OCRmyPDF (Tesseract) med swe+eng och --skip-text
+
+Installeras som systemd user service:
+  scan_overvaka.service
+
+Installerade filer:
+  ~/.local/bin/scan_overvaka
+  ~/.config/systemd/user/scan_overvaka.service
+Output:
+  ~/scan/compressed/
+Log:
+  ~/scan/compressed/logfile.txt

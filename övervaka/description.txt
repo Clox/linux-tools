@@ -1,0 +1,8 @@
+Övervaka en valfri del av skärmen och larma med ljud
+när något visuellt ändras.
+
+Användbart för:
+- väntelägen (chattköer, laddningar)
+- notifieringar som saknar ljud
+- när du vill göra annat under tiden
+

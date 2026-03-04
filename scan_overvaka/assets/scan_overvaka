@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Usage:
+#   scan_overvaka /path/to/watchdir
+#
+# Defaults:
+#   watchdir: ~/scan
+
+WATCH_DIR="${1:-$HOME/scan}"
+
+# File stability (scanner often writes multiple times)
+STABLE_REQUIRED_COUNT=3     # consecutive stable checks required
+STABLE_CHECK_INTERVAL=1     # seconds between checks
+STABLE_MAX_WAIT=60          # max seconds to wait for stability
+
+# Dedupe + alert timings
+EXTRA_MONITORING_DURATION=5
+ENTRY_EXPIRATION_DURATION=5
+
+COMPRESSED_SUBDIR="compressed"
+LOG_FILE_NAME="logfile.txt"
+
+# Ghostscript compression quality:
+#   /screen /ebook /printer /prepress
+COMPRESSION_QUALITY="${COMPRESSION_QUALITY:-/printer}"
+
+# OCR settings (Tesseract via OCRmyPDF)
+OCR_ENABLED="${OCR_ENABLED:-1}"         # 1 or 0
+OCR_LANG="${OCR_LANG:-swe+eng}"
+OCR_SKIP_TEXT="${OCR_SKIP_TEXT:-1}"     # 1 or 0
+OCR_DESKEW="${OCR_DESKEW:-0}"           # 1 or 0
+OCR_IMAGE_DPI="${OCR_IMAGE_DPI:-}"      # e.g. 300, empty = don't force
+
+declare -A processed_files
+
+notify() {
+	local title="$1"
+	local body="$2"
+	if command -v notify-send >/dev/null 2>&1; then
+		notify-send "$title" "$body" || true
+	fi
+}
+
+wait_for_stable_file() {
+	local f="$1"
+	local stable=0
+	local waited=0
+	local last_size="-1"
+
+	while (( waited < STABLE_MAX_WAIT )); do
+		if [ ! -f "$f" ]; then
+			sleep "$STABLE_CHECK_INTERVAL"
+			((waited+=STABLE_CHECK_INTERVAL))
+			stable=0
+			continue
+		fi
+
+		local size
+		size=$(stat -c %s "$f" 2>/dev/null || echo -1)
+
+		if [ "$size" = "$last_size" ] && [ "$size" != "-1" ]; then
+			((stable++))
+			if (( stable >= STABLE_REQUIRED_COUNT )); then
+				return 0
+			fi
+		else
+			stable=0
+			last_size="$size"
+		fi
+
+		sleep "$STABLE_CHECK_INTERVAL"
+		((waited+=STABLE_CHECK_INTERVAL))
+	done
+
+	return 1
+}
+
+compress_pdf() {
+	local in="$1"
+	local out="$2"
+	ps2pdf -dPDFSETTINGS="$COMPRESSION_QUALITY" "$in" "$out"
+}
+
+ocr_pdf_replace() {
+	local pdf="$1"
+
+	if [ "$OCR_ENABLED" != "1" ]; then
+		return 0
+	fi
+
+	local args=()
+	args+=("-l" "$OCR_LANG")
+
+	if [ "$OCR_SKIP_TEXT" = "1" ]; then
+		args+=("--skip-text")
+	fi
+
+	if [ "$OCR_DESKEW" = "1" ]; then
+		args+=("--deskew")
+	fi
+
+	if [ -n "$OCR_IMAGE_DPI" ]; then
+		args+=("--image-dpi" "$OCR_IMAGE_DPI")
+	fi
+
+	local tmp="${pdf%.pdf}.ocr_tmp.pdf"
+	if ocrmypdf "${args[@]}" "$pdf" "$tmp" >/dev/null 2>&1; then
+		mv -f "$tmp" "$pdf"
+	else
+		rm -f "$tmp" >/dev/null 2>&1 || true
+	fi
+}
+
+# Ensure dirs exist
+mkdir -p "$WATCH_DIR"
+OUT_DIR="$WATCH_DIR/$COMPRESSED_SUBDIR"
+mkdir -p "$OUT_DIR"
+LOG_FILE="$OUT_DIR/$LOG_FILE_NAME"
+
+echo "Watching: $WATCH_DIR"
+inotifywait -m "$WATCH_DIR" -e close_write -e moved_to |
+while read -r path action file; do
+	# Avoid loops: ignore events inside output folder
+	if [[ "$path" == "$OUT_DIR/"* ]]; then
+		continue
+	fi
+
+	# Expire dedupe entries
+	current_time=$(date +%s)
+	for key in "${!processed_files[@]}"; do
+		entry_time=${processed_files["$key"]}
+		if (( current_time - entry_time > ENTRY_EXPIRATION_DURATION )); then
+			unset "processed_files[$key]"
+		fi
+	done
+
+	# Dedupe
+	if [[ -n ${processed_files["$file"]+x} ]]; then
+		processed_files["$file"]=$(date +%s)
+		continue
+	fi
+
+	src="$path$file"
+
+	# Wait until stable (instead of skipping forever)
+	if ! wait_for_stable_file "$src"; then
+		datetime=$(date +'%Y-%m-%d_%H;%M;%S.%3N')
+		echo "Datetime: $datetime - File '$file' never became stable within ${STABLE_MAX_WAIT}s. Skipping." >> "$LOG_FILE"
+		processed_files["$file"]=$(date +%s)
+		continue
+	fi
+
+	# Determine type
+	type=$(file -b "$src" || true)
+	base="${file%%.*}"
+	ext="${file##*.}"
+	datetime=$(date +'%Y-%m-%d_%H;%M;%S.%3N')
+
+	if [[ "${type%%,*}" == "PDF document" ]]; then
+		out_pdf="$OUT_DIR/${base}_${datetime}.pdf"
+		tmp_pdf="$OUT_DIR/${base}_${datetime}.compressed_tmp.pdf"
+
+		# Compress -> then OCR the compressed output
+		compress_pdf "$src" "$tmp_pdf"
+		mv -f "$tmp_pdf" "$out_pdf"
+		ocr_pdf_replace "$out_pdf"
+
+	elif [[ "${type%%,*}" == *"image"* ]]; then
+		# Keep images as-is (same behavior as your old script)
+		cp -f "$src" "$OUT_DIR/${base}_${datetime}.${ext}"
+	else
+		echo "Unsupported type for '$file': $type" >> "$LOG_FILE"
+		processed_files["$file"]=$(date +%s)
+		continue
+	fi
+
+	# Warn if scanner writes again shortly after processing
+	additional_changes_detected=false
+	final_size=$(stat -c %s "$src" 2>/dev/null || echo 0)
+
+	for ((i=0; i<EXTRA_MONITORING_DURATION; i++)); do
+		current_size=$(stat -c %s "$src" 2>/dev/null || echo 0)
+		if [ "$current_size" -ne "$final_size" ]; then
+			additional_changes_detected=true
+			break
+		fi
+		sleep 1
+	done
+
+	if $additional_changes_detected; then
+		echo "Additional changes detected in file '$file' within ${EXTRA_MONITORING_DURATION}s after processing." >> "$LOG_FILE"
+		notify "Additional changes detected" "File '$file' changed again shortly after processing."
+	fi
+
+	processed_files["$file"]=$(date +%s)
+done

@@ -1,0 +1,7 @@
+Övervakar en mapp och rensar PDF-filer automatiskt.
+
+När en PDF hamnar i mappen tas alla osynliga sidor bort
+(t.ex. från Chrome-utskrifter) med Ghostscript.
+
+Körs automatiskt i bakgrunden via systemd.
+

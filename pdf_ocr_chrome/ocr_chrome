@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+in="${1:-}"
+[ -n "$in" ] || exit 1
+
+if [ ! -f "$in" ]; then
+	echo "File not found: $in" >&2
+	exit 1
+fi
+
+# Resolve to absolute path if possible (helps caching consistency)
+if command -v realpath >/dev/null 2>&1; then
+	in="$(realpath "$in")"
+fi
+
+# Cache output based on file path + mtime (so re-opening is instant)
+mtime="$(stat -c '%Y' "$in" 2>/dev/null || stat -f '%m' "$in")"
+key="$(printf '%s|%s' "$in" "$mtime" | sha1sum | awk '{print $1}')"
+out="$HOME/.cache/ocrpdf/$key.pdf"
+
+mkdir -p "$HOME/.cache/ocrpdf"
+
+if [ ! -f "$out" ]; then
+	# Create OCR copy. If OCR fails, fall back to original.
+	if ! ocrmypdf -l swe+eng --skip-text "$in" "$out" >/dev/null 2>&1; then
+		cp -f "$in" "$out"
+	fi
+fi
+
+# Find a Chrome binary
+CHROME=""
+for c in google-chrome-stable google-chrome chromium chromium-browser; do
+	if command -v "$c" >/dev/null 2>&1; then
+		CHROME="$c"
+		break
+	fi
+done
+
+if [ -z "$CHROME" ]; then
+	echo "Could not find a Chrome/Chromium binary (google-chrome-stable/google-chrome/chromium/chromium-browser)." >&2
+	exit 1
+fi
+
+exec "$CHROME" --new-tab "file://$out"
