@@ -14,6 +14,22 @@ if command -v realpath >/dev/null 2>&1; then
 	in="$(realpath "$in")"
 fi
 
+# If PDF already has extractable text, open original directly.
+# This avoids unnecessary copy generation when --skip-text would skip OCR anyway.
+has_text_layer=0
+if command -v pdftotext >/dev/null 2>&1; then
+	text_sample="$(
+		pdftotext -f 1 -l 5 -q "$in" - 2>/dev/null \
+			| tr -d '\f[:space:]'
+	)"
+	if [ -n "$text_sample" ]; then
+		has_text_layer=1
+	fi
+fi
+
+if [ "$has_text_layer" -eq 1 ]; then
+	out="$in"
+else
 # Cache output based on file path + mtime (so re-opening is instant)
 mtime="$(stat -c '%Y' "$in" 2>/dev/null || stat -f '%m' "$in")"
 key="$(printf '%s|%s' "$in" "$mtime" | sha1sum | awk '{print $1}')"
@@ -26,6 +42,7 @@ if [ ! -f "$out" ]; then
 	if ! ocrmypdf -l swe+eng --skip-text "$in" "$out" >/dev/null 2>&1; then
 		cp -f "$in" "$out"
 	fi
+fi
 fi
 
 # Find a Chrome binary

@@ -3,6 +3,7 @@ PDF OCR -> Chrome
 Installs a PDF opener wrapper that runs:
 ocrmypdf -l swe+eng --skip-text
 and then opens the OCR:ed copy in Chrome/Chromium.
+If text already exists in the PDF, it opens the original file directly.
 
 Also installs a .desktop handler and sets it as the default app for application/pdf.
 
