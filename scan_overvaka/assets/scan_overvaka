@@ -82,10 +82,23 @@ compress_pdf() {
 	ps2pdf -dPDFSETTINGS="$COMPRESSION_QUALITY" "$in" "$out"
 }
 
+has_pdf_forms() {
+	local pdf="$1"
+	if ! command -v qpdf >/dev/null 2>&1; then
+		return 1
+	fi
+	qpdf --json "$pdf" 2>/dev/null | grep -Eq '"/AcroForm"|"AcroForm"'
+}
+
 ocr_pdf_replace() {
 	local pdf="$1"
 
 	if [ "$OCR_ENABLED" != "1" ]; then
+		return 0
+	fi
+
+	# OCRmyPDF may flatten/remove interactive form fields; skip OCR for form PDFs.
+	if has_pdf_forms "$pdf"; then
 		return 0
 	fi
 
@@ -159,12 +172,12 @@ while read -r path action file; do
 
 	if [[ "${type%%,*}" == "PDF document" ]]; then
 		out_pdf="$OUT_DIR/${base}_${datetime}.pdf"
-		tmp_pdf="$OUT_DIR/${base}_${datetime}.compressed_tmp.pdf"
+		tmp_pdf="$OUT_DIR/.${base}_${datetime}.processing.pdf"
 
-		# Compress -> then OCR the compressed output
+		# Compress + OCR in temp path, publish to output only when fully done.
 		compress_pdf "$src" "$tmp_pdf"
+		ocr_pdf_replace "$tmp_pdf"
 		mv -f "$tmp_pdf" "$out_pdf"
-		ocr_pdf_replace "$out_pdf"
 
 	elif [[ "${type%%,*}" == *"image"* ]]; then
 		# Keep images as-is (same behavior as your old script)

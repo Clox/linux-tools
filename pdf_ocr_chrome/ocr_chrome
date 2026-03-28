@@ -14,6 +14,14 @@ if command -v realpath >/dev/null 2>&1; then
 	in="$(realpath "$in")"
 fi
 
+has_pdf_forms() {
+	local pdf="$1"
+	if ! command -v qpdf >/dev/null 2>&1; then
+		return 1
+	fi
+	qpdf --json "$pdf" 2>/dev/null | grep -Eq '"/AcroForm"|"AcroForm"'
+}
+
 # If PDF already has extractable text, open original directly.
 # This avoids unnecessary copy generation when --skip-text would skip OCR anyway.
 has_text_layer=0
@@ -27,7 +35,12 @@ if command -v pdftotext >/dev/null 2>&1; then
 	fi
 fi
 
-if [ "$has_text_layer" -eq 1 ]; then
+has_forms=0
+if has_pdf_forms "$in"; then
+	has_forms=1
+fi
+
+if [ "$has_text_layer" -eq 1 ] || [ "$has_forms" -eq 1 ]; then
 	out="$in"
 else
 # Cache output based on file path + mtime (so re-opening is instant)

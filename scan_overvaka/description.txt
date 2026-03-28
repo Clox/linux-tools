@@ -4,6 +4,8 @@ Scan övervaka: komprimera + OCR
 Sparar ut till undermapp "compressed/" där PDF:er:
 1) komprimeras med Ghostscript (ps2pdf)
 2) OCR-processas med OCRmyPDF (Tesseract) med swe+eng och --skip-text
+PDF med formulärfält OCR:as inte, för att bevara fälten
+Filen publiceras i outputmappen först när hela kedjan är klar.
 
 Installeras som systemd user service:
   scan_overvaka.service
