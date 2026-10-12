@@ -1,0 +1,6 @@
+[Unit]
+Description=Starta om en stor Cinnamon-process efter inaktivitet
+
+[Service]
+Type=oneshot
+ExecStart=@HOME@/.local/bin/cinnamon-refresh auto

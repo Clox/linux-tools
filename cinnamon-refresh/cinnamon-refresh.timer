@@ -1,0 +1,9 @@
+[Unit]
+Description=Kontrollera Cinnamon-processens storlek var 30:e minut
+
+[Timer]
+OnActiveSec=5min
+OnUnitActiveSec=30min
+
+[Install]
+WantedBy=timers.target

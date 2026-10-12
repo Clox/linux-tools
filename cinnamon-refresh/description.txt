@@ -1,0 +1,8 @@
+Startar om enbart Cinnamon-skalet när det blivit långsamt efter lång driftstid.
+
+Kommandon: cinnamon-refresh status | restart | auto
+"auto" startar bara om Cinnamon använder minst 1 GiB RAM och ingen har
+använt tangentbord eller mus på en timme. Den hoppar över om en utskrift
+pågår. Kräver xssstate (suckless-tools).
+Installationen aktiverar en systemd-användartimer som kontrollerar läget
+efter fem minuter och därefter var 30:e minut.
