@@ -1,0 +1,199 @@
+#!/usr/bin/python3
+"""Wait for a safe nightly Cinnamon refresh or a monitor reconnect."""
+
+import datetime as dt
+import glob
+import os
+import re
+import subprocess
+import sys
+
+from gi.repository import Gio, GLib
+
+
+DISPLAY_BUS = "org.cinnamon.Muffin.DisplayConfig"
+DISPLAY_PATH = "/org/cinnamon/Muffin/DisplayConfig"
+MIN_IDLE_MS = 60 * 60 * 1000
+RECONNECT_DELAY_SECONDS = 3
+
+
+def log(message):
+    print(message, flush=True)
+
+
+def command(args, timeout=5):
+    return subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=True).stdout.strip()
+
+
+def cinnamon_pid():
+    try:
+        pids = command(["pgrep", "-u", str(os.getuid()), "-x", "cinnamon"]).splitlines()
+    except subprocess.CalledProcessError:
+        return None
+    return int(pids[0]) if len(pids) == 1 else None
+
+
+def already_refreshed(pid):
+    now = dt.datetime.now().astimezone()
+    boundary = now.replace(hour=3, minute=0, second=0, microsecond=0)
+    if now < boundary:
+        boundary -= dt.timedelta(days=1)
+    age = int(command(["ps", "-p", str(pid), "-o", "etimes="]))
+    return now - dt.timedelta(seconds=age) >= boundary
+
+
+def idle_for_an_hour():
+    try:
+        return int(command(["xssstate", "-i"])) >= MIN_IDLE_MS
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+
+
+class Watcher:
+    def __init__(self, reconnect_test=False):
+        self.bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        self.loop = GLib.MainLoop()
+        self.reconnect_test = reconnect_test
+        self.was_absent = False
+        self.reconnect_source = None
+        self.stable_checks = 0
+        self.done = False
+
+    def finish(self):
+        self.done = True
+        if self.loop.is_running():
+            self.loop.quit()
+
+    def primary_connector(self):
+        state = self.bus.call_sync(
+            DISPLAY_BUS, DISPLAY_PATH, DISPLAY_BUS, "GetCurrentState",
+            None, None, Gio.DBusCallFlags.NONE, 5000, None,
+        ).unpack()
+        for logical in state[2]:
+            if logical[4] and logical[5]:
+                return logical[5][0][0]
+        return None
+
+    def monitor_ready(self):
+        try:
+            connector = self.primary_connector()
+            if not connector:
+                return False
+            statuses = glob.glob(f"/sys/class/drm/card*-{connector}/status")
+            if not statuses or not any(self.drm_connected(path) for path in statuses):
+                return False
+            query = command(["xrandr", "--query"])
+            return bool(re.search(rf"^{re.escape(connector)} connected primary [0-9]+x[0-9]+", query, re.MULTILINE))
+        except (OSError, GLib.Error, subprocess.SubprocessError):
+            return False
+
+    @staticmethod
+    def drm_connected(path):
+        with open(path, encoding="ascii") as status:
+            return status.read().strip() == "connected"
+
+    def refresh(self, reason):
+        pid = cinnamon_pid()
+        if pid is None:
+            log("Ingen entydig Cinnamon-process; ingen automatisk omstart.")
+            self.finish()
+            return
+        if not self.reconnect_test and already_refreshed(pid):
+            log("Cinnamon har redan startats under denna nattperiod.")
+            self.finish()
+            return
+        if not self.monitor_ready():
+            self.was_absent = True
+            return
+        log(f"Försöker starta om Cinnamon ({reason}).")
+        result = subprocess.run([os.path.expanduser("~/.local/bin/cinnamon-refresh"), "restart"], timeout=40)
+        new_pid = cinnamon_pid()
+        if result.returncode == 0 and new_pid is not None and new_pid != pid:
+            log("Cinnamon startades om; nattens kontroll är klar.")
+            self.finish()
+        elif new_pid is None:
+            log("Cinnamon saknas efter omstartsförsöket; kontrollera journalen.")
+            self.finish()
+        else:
+            log("Omstarten sköts upp; försöker igen vid nästa kontroll.")
+
+    def reconnect_check(self):
+        if not self.monitor_ready():
+            self.stable_checks = 0
+        else:
+            self.stable_checks += 1
+            if self.stable_checks >= 2:
+                self.reconnect_source = None
+                self.was_absent = False
+                self.refresh("skärmen återanslöts")
+                return GLib.SOURCE_REMOVE
+        if self.stable_checks == 0 and self.reconnect_attempts >= 15:
+            self.reconnect_source = None
+            return GLib.SOURCE_REMOVE
+        self.reconnect_attempts += 1
+        return GLib.SOURCE_CONTINUE
+
+    def on_monitors_changed(self, *_args):
+        if self.was_absent and self.reconnect_source is None:
+            self.reconnect_attempts = 0
+            self.stable_checks = 0
+            self.reconnect_source = GLib.timeout_add_seconds(RECONNECT_DELAY_SECONDS, self.reconnect_check)
+        elif not self.monitor_ready():
+            self.was_absent = True
+
+    def hourly_check(self):
+        pid = cinnamon_pid()
+        if pid is None:
+            log("Ingen entydig Cinnamon-process; nattkontrollen avslutas.")
+            self.finish()
+            return GLib.SOURCE_REMOVE
+        if already_refreshed(pid):
+            log("Cinnamon har redan startats under denna nattperiod.")
+            self.finish()
+            return GLib.SOURCE_REMOVE
+        if not self.monitor_ready():
+            self.was_absent = True
+        elif idle_for_an_hour():
+            self.refresh("timkontroll efter minst en timmes inaktivitet")
+        return GLib.SOURCE_CONTINUE
+
+    def run(self):
+        if os.environ.get("XDG_SESSION_TYPE") != "x11" or "Cinnamon" not in os.environ.get("XDG_CURRENT_DESKTOP", ""):
+            log("Ingen aktiv Cinnamon/X11-session; nattkontrollen avslutas.")
+            return
+        pid = cinnamon_pid()
+        if pid is None:
+            log("Ingen entydig Cinnamon-process; nattkontrollen avslutas.")
+            return
+        if self.reconnect_test:
+            if self.monitor_ready():
+                raise RuntimeError("Skärmen måste vara avstängd innan engångstestet armeras.")
+            self.was_absent = True
+            self.bus.signal_subscribe(
+                DISPLAY_BUS, DISPLAY_BUS, "MonitorsChanged", DISPLAY_PATH,
+                None, Gio.DBusSignalFlags.NONE, self.on_monitors_changed,
+            )
+            log("Engångstest armerat; väntar på att skärmen återansluts.")
+            self.loop.run()
+            return
+        if already_refreshed(pid):
+            log("Cinnamon har redan startats under denna nattperiod.")
+            return
+        self.bus.signal_subscribe(
+            DISPLAY_BUS, DISPLAY_BUS, "MonitorsChanged", DISPLAY_PATH,
+            None, Gio.DBusSignalFlags.NONE, self.on_monitors_changed,
+        )
+        GLib.timeout_add_seconds(3600, self.hourly_check)
+        log("Väntar på en säker nattlig omstart eller att skärmen återansluts.")
+        self.hourly_check()
+        if not self.done:
+            self.loop.run()
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 2 or (len(sys.argv) == 2 and sys.argv[1] != "--once-on-reconnect"):
+        sys.exit("Användning: cinnamon-refresh-watch [--once-on-reconnect]")
+    try:
+        Watcher(reconnect_test=len(sys.argv) == 2).run()
+    except (OSError, GLib.Error, subprocess.SubprocessError, ValueError, RuntimeError) as error:
+        sys.exit(f"Bevakningen kunde inte starta: {error}")

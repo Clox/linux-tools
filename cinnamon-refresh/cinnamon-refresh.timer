@@ -1,9 +1,10 @@
 [Unit]
-Description=Kontrollera Cinnamon-processens storlek var 30:e minut
+Description=Kontrollera nattlig omstart av Cinnamon från klockan 03
 
 [Timer]
-OnActiveSec=5min
-OnUnitActiveSec=30min
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+Unit=cinnamon-refresh.service
 
 [Install]
 WantedBy=timers.target

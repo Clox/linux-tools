@@ -1,6 +1,6 @@
 [Unit]
-Description=Starta om en stor Cinnamon-process efter inaktivitet
+Description=Vänta på säker nattlig omstart av Cinnamon
 
 [Service]
-Type=oneshot
-ExecStart=@HOME@/.local/bin/cinnamon-refresh auto
+Type=simple
+ExecStart=/usr/bin/python3 @HOME@/.local/libexec/cinnamon-refresh-watch

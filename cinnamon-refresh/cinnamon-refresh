@@ -1,24 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MIN_RSS_KIB=1048576
-MIN_IDLE_MILLISECONDS=3600000
-
-read_idle() {
-    local value
-    command -v xssstate >/dev/null 2>&1 || return 1
-    value=$(timeout 5 xssstate -i 2>/dev/null) || return 1
-    [[ "$value" =~ ^[0-9]+$ ]] || return 1
-    printf '%s' "$value"
-}
-
 usage() {
-    echo "Användning: cinnamon-refresh status | restart | auto" >&2
+    echo "Användning: cinnamon-refresh status | restart" >&2
     exit 2
 }
 
 case "${1:-}" in
-    status|restart|auto) action=$1 ;;
+    status|restart) action=$1 ;;
     *) usage ;;
 esac
 (( $# == 1 )) || usage
@@ -35,42 +24,25 @@ if (( ${#pids[@]} != 1 )); then
 fi
 pid=${pids[0]}
 read -r age rss < <(ps -p "$pid" -o etimes=,rss=)
-
 printf 'Cinnamon: PID %s, drifttid %s dagar, RSS %s MiB\n' \
     "$pid" "$((age / 86400))" "$((rss / 1024))"
 
-if [[ "$action" == status ]]; then
-    if idle=$(read_idle); then
-        printf 'Inaktivitet: %s minuter\n' "$((idle / 60000))"
-    else
-        echo "Inaktivitet: kunde inte mätas"
-    fi
-    if [[ "${idle:-}" =~ ^[0-9]+$ ]] && \
-       (( rss >= MIN_RSS_KIB && idle >= MIN_IDLE_MILLISECONDS )); then
-        echo "Automatisk omstart skulle utlösas om ingen utskrift pågår."
-    else
-        echo "Automatisk omstart skulle inte utlösas."
-    fi
-    exit 0
+[[ "$action" == status ]] && exit 0
+
+# När skärmen är avstängd kan Cinnamon sakna primär bildskärm vid uppstart.
+if ! command -v xrandr >/dev/null 2>&1; then
+    echo "xrandr saknas; Cinnamon startas inte om." >&2
+    exit 1
+fi
+if ! monitor_count=$(timeout 5 xrandr --listmonitors 2>/dev/null | awk 'NR == 1 { print $2 }'); then
+    echo "Kan inte kontrollera bildskärmar; Cinnamon startas inte om." >&2
+    exit 1
+fi
+if [[ ! "$monitor_count" =~ ^[0-9]+$ ]] || (( monitor_count < 1 )); then
+    echo "X11 visar ingen aktiv bildskärm; Cinnamon startas inte om." >&2
+    exit 1
 fi
 
-if [[ "$action" == auto ]] && (( rss < MIN_RSS_KIB )); then
-    echo "Ingen omstart behövs."
-    exit 0
-fi
-
-if [[ "$action" == auto ]]; then
-    if ! idle=$(read_idle); then
-        echo "Kan inte mäta inaktivitet; Cinnamon startas inte om." >&2
-        exit 1
-    fi
-    if (( idle < MIN_IDLE_MILLISECONDS )); then
-        printf 'Bara %s minuter inaktivitet; ingen omstart.\n' "$((idle / 60000))"
-        exit 0
-    fi
-fi
-
-# Starta aldrig om skalet mitt under ett utskriftsjobb.
 if ! command -v lpstat >/dev/null 2>&1; then
     echo "Kan inte kontrollera utskriftskön: lpstat saknas." >&2
     exit 1
@@ -84,17 +56,10 @@ if [[ -n "$jobs" ]]; then
     exit 0
 fi
 
-if ! command -v systemd-run >/dev/null 2>&1; then
-    echo "systemd-run saknas." >&2
+# Skärmen kan ha stängts av medan utskriftskön kontrollerades.
+if ! timeout 5 xrandr --query 2>/dev/null | grep -Eq '^[^ ]+ connected primary [0-9]+x[0-9]+'; then
+    echo "Ingen aktiv primär bildskärm; Cinnamon startas inte om." >&2
     exit 1
-fi
-
-# Kontrollera igen precis innan en automatisk omstart om användaren kommit tillbaka.
-if [[ "$action" == auto ]]; then
-    if ! idle=$(read_idle) || (( idle < MIN_IDLE_MILLISECONDS )); then
-        echo "Användaren är aktiv igen, eller inaktivitet kan inte mätas; ingen omstart."
-        exit 0
-    fi
 fi
 
 unit="cinnamon-refresh-$(date +%s)-$$"
@@ -106,6 +71,8 @@ for ((i = 0; i < 20; i++)); do
     mapfile -t new_pids < <(pgrep -u "$(id -u)" -x cinnamon || true)
     for new_pid in "${new_pids[@]}"; do
         if [[ "$new_pid" != "$pid" ]] && kill -0 "$new_pid" 2>/dev/null; then
+            sleep 2
+            kill -0 "$new_pid" 2>/dev/null || continue
             new_rss=$(ps -p "$new_pid" -o rss= | tr -d ' ')
             printf 'Cinnamon omstartad: PID %s, RSS %s MiB\n' "$new_pid" "$((new_rss / 1024))"
             exit 0
